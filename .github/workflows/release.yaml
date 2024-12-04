@@ -1,0 +1,84 @@
+name: Release
+
+on:
+    workflow_dispatch:
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - uses: pnpm/action-setup@v3
+              with:
+                  version: 8
+
+            - name: Configure Git
+              run: |
+                  git config user.name "${{ github.actor }}"
+                  git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+            - name: "Setup npm for npmjs"
+              run: |
+                  npm config set registry https://registry.npmjs.org/
+                  echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+            - name: Install Protobuf Compiler
+              run: sudo apt-get install -y protobuf-compiler
+
+            - name: Install dependencies
+              run: pnpm install
+
+            - name: Build packages
+              run: pnpm run build
+
+            - name: Publish Packages
+              id: publish
+              run: |
+                  # Get the latest release tag
+                  LATEST_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)
+
+                  # Force clean the working directory and reset any changes
+                  echo "Cleaning working directory and resetting any changes"
+                  git clean -fd
+                  git reset --hard HEAD
+
+                  # Force checkout the latest tag
+                  echo "Checking out latest tag: $LATEST_TAG"
+                  git checkout -b temp-publish-branch $LATEST_TAG
+
+                  echo "Publishing version: $LATEST_TAG"
+                  npx lerna publish from-package --yes --dist-tag latest
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+            - name: Get Version Tag
+              id: get_tag
+              run: echo "TAG=$(git describe --tags --abbrev=0)" >> $GITHUB_OUTPUT
+
+            - name: Generate Release Body
+              id: release_body
+              run: |
+                  if [ -f CHANGELOG.md ]; then
+                    echo "body=$(cat CHANGELOG.md)" >> $GITHUB_OUTPUT
+                  else
+                    echo "body=No changelog provided for this release." >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Create GitHub Release
+              uses: actions/create-release@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+                  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin
+              with:
+                  tag_name: ${{ steps.get_tag.outputs.TAG }}
+                  release_name: Release
+                  body_path: CHANGELOG.md
+                  draft: false
+                  prerelease: false
